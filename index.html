@@ -596,10 +596,13 @@ const API = {
   },
 
   async patchState(code, patch) {
+    // El servidor reemplaza game_state por completo, no hace merge.
+    // Fusionamos el patch sobre el gs actual para no perder campos.
+    const fullState = { ...(gs || {}), ...patch };
     const r = await fetch(`${API_BASE}/rooms/${code}/state`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ game_state: patch })
+      body: JSON.stringify({ game_state: fullState })
     });
     BC.postMessage({ code }); // avisar pestañas locales
     return r.json();
@@ -903,8 +906,12 @@ async function submitAnswer(){
 
 async function checkRoundEnd(state){
   if(roundEndQueued)return;
-  const allIn=Object.keys(state.players||{}).length>0&&Object.keys(state.players).every(id=>state.answers?.[id]);
-  if(allIn||Date.now()>=state.timerEnd){roundEndQueued=true;await finishRound(state);}
+  const playerCount=Object.keys(state.players||{}).length;
+  const answerCount=Object.keys(state.answers||{}).length;
+  // Termina si todos contestaron O si el tiempo expiró (timerEnd debe existir y ser pasado)
+  const allIn=playerCount>0&&answerCount>=playerCount;
+  const expired=state.timerEnd&&Date.now()>=state.timerEnd;
+  if(allIn||expired){roundEndQueued=true;await finishRound(state);}
 }
 
 async function finishRound(state){
