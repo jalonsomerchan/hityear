@@ -516,51 +516,105 @@ async function loadRoundAudio(songObj){
 }
 
 // ─────────────────────────────────────────
-// MOCK API
+// API REST  (alon.one/juegos/api)
 // ─────────────────────────────────────────
-const BC=new BroadcastChannel('hityear');
+const API_BASE = 'https://alon.one/juegos/api';
+const GAME_ID  = 1;
 
-const API={
-  _key:code=>`hy_room_${code}`,
-  _get(code){const r=localStorage.getItem(this._key(code));return r?JSON.parse(r):null;},
-  _set(code,data){localStorage.setItem(this._key(code),JSON.stringify(data));BC.postMessage({code});},
+// BroadcastChannel: notifica otras pestañas del mismo navegador
+// para actualizaciones instantáneas sin esperar el polling
+const BC = new BroadcastChannel('hityear');
 
-  createUser:username=>Promise.resolve({user_id:uuid(),username}),
+const API = {
 
-  createRoom(hostId,hostName){
-    const code=roomCode();
-    const room={id:uuid(),code,state:{
-      phase:'lobby',themeId:null,audioMode:'all',
-      round:0,totalRounds:5,timePerTurn:30,
-      songIndices:[],currentSongIndex:0,
-      timerEnd:null,roundEndTime:null,
-      answers:{},roundScores:{},totalScores:{},
-      players:{[hostId]:{name:hostName,host:true}}
-    }};
-    this._set(code,room);
-    return Promise.resolve({room_id:room.id,room_code:code});
+  async createUser(username) {
+    try {
+      const r = await fetch(`${API_BASE}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email: `hy.${uuid()}@hityear.app`, password: uuid() })
+      });
+      const d = await r.json();
+      // Acepta cualquier campo que devuelva el servidor
+      return { user_id: d.user_id || d.id || d.uuid || uuid() };
+    } catch(e) {
+      console.warn('createUser falló, usando UUID local:', e);
+      return { user_id: uuid() };
+    }
   },
 
-  getRoom(code){return Promise.resolve(this._get(code));},
-
-  joinRoom(code,userId,username){
-    const room=this._get(code);
-    if(!room)return Promise.reject(new Error('Sala no encontrada'));
-    if(!room.state.players[userId])room.state.players[userId]={name:username,host:false};
-    if(room.state.totalScores[userId]==null)room.state.totalScores[userId]=0;
-    this._set(code,room);
-    return Promise.resolve({ok:true});
+  async createRoom(hostId, hostName) {
+    const initialState = {
+      phase: 'lobby', themeId: null, audioMode: 'all',
+      round: 0, totalRounds: 5, timePerTurn: 30,
+      songIndices: [], currentSongIndex: 0,
+      timerEnd: null, roundEndTime: null,
+      answers: {}, roundScores: {}, totalScores: {},
+      players: { [hostId]: { name: hostName, host: true } }
+    };
+    const r = await fetch(`${API_BASE}/rooms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_id: GAME_ID, host_id: hostId, game_state: initialState })
+    });
+    const d = await r.json();
+    BC.postMessage({ code: d.room_code });
+    return d; // { room_id, room_code, message }
   },
 
-  patchState(code,patch){
-    const room=this._get(code);
-    if(!room)return Promise.reject(new Error('Sala no encontrada'));
-    room.state={...room.state,...patch};
-    this._set(code,room);
-    return Promise.resolve({ok:true});
+  async getRoom(code) {
+    const r = await fetch(`${API_BASE}/rooms/${code}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.error || d.code === 404) return null;
+    // Normaliza la respuesta: el estado del juego vive en game_state
+    return {
+      id:    d.room_id || d.id,
+      code:  d.room_code || code,
+      state: d.game_state || {}
+    };
   },
 
-  saveScore(userId,roomId,score,meta){console.log('[score]',userId,score,meta);return Promise.resolve({ok:true});}
+  async joinRoom(code, userId, username) {
+    const r = await fetch(`${API_BASE}/rooms/${code}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId })
+    });
+    if (!r.ok) throw new Error('Sala no encontrada');
+    // Añadir jugador al game_state.players
+    const room = await this.getRoom(code);
+    if (room) {
+      const st = { ...room.state };
+      if (!st.players)     st.players     = {};
+      if (!st.totalScores) st.totalScores = {};
+      st.players[userId] = { name: username, host: false };
+      st.totalScores[userId] = st.totalScores[userId] ?? 0;
+      await this.patchState(code, st);
+    }
+    return { ok: true };
+  },
+
+  async patchState(code, patch) {
+    const r = await fetch(`${API_BASE}/rooms/${code}/state`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_state: patch })
+    });
+    BC.postMessage({ code }); // avisar pestañas locales
+    return r.json();
+  },
+
+  async saveScore(userId, roomId, score, meta) {
+    try {
+      const r = await fetch(`${API_BASE}/scores`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId, game_id: GAME_ID, room_id: roomId, score_value: score, metadata: meta })
+      });
+      return r.json();
+    } catch(e) { return { ok: false }; }
+  }
 };
 
 // ─────────────────────────────────────────
