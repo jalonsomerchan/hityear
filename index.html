@@ -519,7 +519,7 @@ async function loadRoundAudio(songObj){
 // API REST  (alon.one/juegos/api)
 // ─────────────────────────────────────────
 const API_BASE = 'https://alon.one/juegos/api';
-const GAME_ID  = 1;
+const GAME_ID  = 9;
 
 // BroadcastChannel: notifica otras pestañas del mismo navegador
 // para actualizaciones instantáneas sin esperar el polling
@@ -686,8 +686,11 @@ function populateThemeSelect(){
 // INIT
 // ─────────────────────────────────────────
 (function init(){
+  // Solo prellenar el nombre (UX), pero nunca reutilizar el user_id en caché.
+  // Cada sesión crea un usuario nuevo en la API para garantizar consistencia con la BD.
   const saved=localStorage.getItem('hy_user');
-  if(saved){me=JSON.parse(saved);document.getElementById('inp-username').value=me.name;}
+  if(saved){ const u=JSON.parse(saved); document.getElementById('inp-username').value=u.name||''; }
+  localStorage.removeItem('hy_user'); // forzar nueva creación en cada sesión
   populateThemeSelect();
 
   // Show web share button if API is available
@@ -708,23 +711,42 @@ function populateThemeSelect(){
 async function handleEnter(){
   const name=document.getElementById('inp-username').value.trim();
   if(!name)return showErr('Introduce tu nombre');
-  if(!me||me.name!==name){
+
+  // Siempre crear usuario en la API antes de cualquier operación de sala.
+  // Esto garantiza que el user_id existe en la BD real, evitando errores
+  // al crear/unirse a salas con IDs obsoletos de localStorage.
+  const btn=document.querySelector('#screen-welcome .btn-grad');
+  if(btn){ btn.disabled=true; btn.textContent='Conectando…'; }
+  try {
     const res=await API.createUser(name);
+    if(!res.user_id) throw new Error('Sin user_id');
     me={id:res.user_id,name};
     localStorage.setItem('hy_user',JSON.stringify(me));
+  } catch(e) {
+    if(btn){ btn.disabled=false; btn.textContent='Entrar'; }
+    return showErr('No se pudo crear el usuario: '+e.message);
   }
-  if(activeTab==='create'){
-    const res=await API.createRoom(me.id,me.name);
-    room={id:res.room_id,code:res.room_code};
-    host=true;
-  }else{
-    const code=document.getElementById('inp-code').value.trim().toUpperCase();
-    if(!code)return showErr('Introduce el código');
-    const r=await API.getRoom(code);
-    if(!r)return showErr('Sala no encontrada');
-    room={id:r.id,code}; host=false;
-    await API.joinRoom(code,me.id,me.name);
+
+  try {
+    if(activeTab==='create'){
+      const res=await API.createRoom(me.id,me.name);
+      if(!res.room_code) throw new Error('Sin room_code');
+      room={id:res.room_id,code:res.room_code};
+      host=true;
+    }else{
+      const code=document.getElementById('inp-code').value.trim().toUpperCase();
+      if(!code){ if(btn){btn.disabled=false;btn.textContent='Entrar';} return showErr('Introduce el código'); }
+      const r=await API.getRoom(code);
+      if(!r){ if(btn){btn.disabled=false;btn.textContent='Entrar';} return showErr('Sala no encontrada'); }
+      room={id:r.id,code}; host=false;
+      await API.joinRoom(code,me.id,me.name);
+    }
+  } catch(e) {
+    if(btn){ btn.disabled=false; btn.textContent='Entrar'; }
+    return showErr(e.message||'Error al acceder a la sala');
   }
+
+  if(btn){ btn.disabled=false; btn.textContent='Entrar'; }
   enterLobby();
 }
 
