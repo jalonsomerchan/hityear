@@ -690,11 +690,38 @@ function setAudioMode(mode){
 function showErr(msg){const el=document.getElementById('welcome-err');el.textContent=msg;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3500);}
 
 // ─────────────────────────────────────────
+// ROUTER
+// ─────────────────────────────────────────
+const Router = {
+  push(path)    { history.pushState({path},'','#'+path); this._title(path); },
+  replace(path) { history.replaceState({path},'','#'+path); this._title(path); },
+  current()     { return window.location.hash.replace(/^#/,'')||'/'; },
+  roomCode()    { const m=this.current().match(/^\/room\/([A-Z0-9]+)$/i); return m?m[1].toUpperCase():null; },
+  _title(path)  { const m=path.match(/^\/room\/([A-Z0-9]+)$/i); document.title=m?`HitYear — Sala ${m[1]}`:'HitYear — Adivina el Año'; }
+};
+
+window.addEventListener('popstate',()=>{
+  const code=Router.roomCode();
+  if(!code&&room) leaveRoom();
+  else if(code&&!room){ setTab('join'); document.getElementById('inp-code').value=code; show('welcome'); }
+});
+
+function leaveRoom(){
+  stopPoll();
+  if(timerId){clearInterval(timerId);timerId=null;}
+  audio.pause(); audio.src='';
+  room=null; host=false; gs=null; lastPhase=null; lastRound=-1; roundEndQueued=false; myAnswer=null;
+  Router.replace('/');
+  show('welcome');
+}
+
+// ─────────────────────────────────────────
 // SHARE / LINK
 // ─────────────────────────────────────────
 function getShareUrl(){
   const u=new URL(window.location.href);
-  u.search=`?room=${room.code}`;
+  u.hash=`/room/${room.code}`;
+  u.search='';
   return u.toString();
 }
 
@@ -740,12 +767,14 @@ function populateThemeSelect(){
   // Show web share button if API is available
   if(navigator.share)document.getElementById('btn-webshare').classList.remove('hidden');
 
-  // Handle invite link (?room=CODE)
-  const params=new URLSearchParams(window.location.search);
-  const inviteCode=params.get('room');
+  // Handle invite link (#/room/CODE or legacy ?room=CODE)
+  const inviteCode=Router.roomCode()||(new URLSearchParams(window.location.search).get('room'));
   if(inviteCode){
     setTab('join');
     document.getElementById('inp-code').value=inviteCode.toUpperCase();
+    Router.replace('/room/'+inviteCode.toUpperCase());
+  }else{
+    Router.replace('/');
   }
 })();
 
@@ -792,6 +821,7 @@ async function handleEnter(){
   }
 
   if(btn){ btn.disabled=false; btn.textContent='Entrar'; }
+  Router.push('/room/'+room.code);
   enterLobby();
 }
 
@@ -864,6 +894,8 @@ async function tick(){
   const changed=phase!==lastPhase||round!==lastRound;
   if(changed){
     lastPhase=phase;lastRound=round;roundEndQueued=false;
+    // Keep hash in sync with game phase
+    if(room&&Router.roomCode()!==room.code) Router.replace('/room/'+room.code);
     if(phase==='lobby')    enterLobby();   // también desde game_end: todos vuelven al lobby
     if(phase==='playing')  enterPlaying(gs);
     if(phase==='round_end')enterRoundResult(gs);
