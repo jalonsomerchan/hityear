@@ -19,7 +19,7 @@ const HIT_THE_YEAR_THEMES = [
 window.HIT_THE_YEAR_THEMES = HIT_THE_YEAR_THEMES;
 
 (function loadHitYearOptionalModules() {
-    ['data/daily-challenge.js', 'data/daily-solo-fix.js', 'data/solo-daily-autoplay.js', 'data/duel-mode.js', 'data/home-menu.js'].forEach((src) => {
+    ['data/daily-challenge.js', 'data/daily-solo-fix.js', 'data/solo-daily-autoplay.js', 'data/duel-mode.js', 'data/home-menu.js', 'data/app-router.js'].forEach((src) => {
         if (document.querySelector(`script[src="${src}"]`)) return;
 
         const script = document.createElement('script');
