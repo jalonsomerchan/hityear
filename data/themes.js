@@ -12,14 +12,14 @@ const HIT_THE_YEAR_THEMES = [
     { id: 'popEspanolHoyYSiempre', label: 'Pop Español Hoy y Siempre', variable: 'popEspanolHoyYSiempre' },
     { id: 'espana80y90', label: 'España 80 y 90', variable: 'espana80y90' },
     { id: 'bestHits', label: 'Best Hits', variable: 'bestHits' },
-    { id: 'soloRegguetton', label: 'Solo Reggaetton', variable: 'soloRegguetton' },
+    { id: 'soloRegguetton', label: 'Solo Regguetton', variable: 'soloRegguetton' },
 
 ];
 
 window.HIT_THE_YEAR_THEMES = HIT_THE_YEAR_THEMES;
 
 (function loadHitYearOptionalModules() {
-    ['data/daily-challenge.js', 'data/daily-solo-fix.js', 'data/solo-daily-autoplay.js'].forEach((src) => {
+    ['data/daily-challenge.js', 'data/daily-solo-fix.js', 'data/solo-daily-autoplay.js', 'data/duel-mode.js'].forEach((src) => {
         if (document.querySelector(`script[src="${src}"]`)) return;
 
         const script = document.createElement('script');
