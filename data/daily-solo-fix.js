@@ -1,7 +1,7 @@
 /*
  * HitYear solo/daily replacement
  * - No muestra portada, título ni artista hasta contestar.
- * - Obtiene preview fresca desde Deezer por deezerId para evitar 403 de URLs firmadas caducadas.
+ * - Usa la API JSONP de Deezer por deezerId como fuente de datos y preview.
  */
 (function initHitYearSoloDailyReplacement() {
     const DAILY_COUNT = 7;
@@ -21,7 +21,7 @@
         index: 0,
         startedAt: 0,
         audio: null,
-        previewCache: new Map(),
+        trackCache: new Map(),
     };
 
     function onReady(fn) {
@@ -118,13 +118,14 @@
         return themes.flatMap((theme) => {
             const list = Array.isArray(window[theme.variable]) ? window[theme.variable] : [];
             return list.map((song) => ({ ...song, themeId: theme.id, themeLabel: theme.label }));
-        }).filter((song) => song.title && song.artist && Number.isFinite(Number(song.year)));
+        }).filter((song) => song.deezerId && Number.isFinite(Number(song.year)));
     }
 
-    function deezerJsonp(trackId) {
+    function fetchDeezerTrack(trackId) {
         return new Promise((resolve) => {
             if (!trackId) return resolve(null);
-            const callback = `deezerPreview_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+            const callback = `_dz${Date.now()}_${Math.random().toString(36).slice(2)}`;
             const script = document.createElement('script');
             const cleanup = () => {
                 delete window[callback];
@@ -133,30 +134,46 @@
             const timeout = window.setTimeout(() => {
                 cleanup();
                 resolve(null);
-            }, 7000);
+            }, 8000);
 
             window[callback] = (data) => {
                 window.clearTimeout(timeout);
                 cleanup();
-                resolve(data?.preview || null);
+                if (!data || data.error) return resolve(null);
+                resolve(data);
             };
+
             script.onerror = () => {
                 window.clearTimeout(timeout);
                 cleanup();
                 resolve(null);
             };
+
             script.src = `https://api.deezer.com/track/${encodeURIComponent(trackId)}?output=jsonp&callback=${callback}`;
             document.head.appendChild(script);
         });
     }
 
-    async function getFreshPreview(song) {
-        const key = song.deezerId || `${song.title}-${song.artist}`;
-        if (state.previewCache.has(key)) return state.previewCache.get(key);
-        const fresh = await deezerJsonp(song.deezerId);
-        const preview = fresh || song.preview || '';
-        state.previewCache.set(key, preview);
-        return preview;
+    function normalizeDeezerTrack(song, data) {
+        if (!data) return null;
+        return {
+            id: data.id || song.deezerId,
+            title: data.title || data.title_short || song.title || 'Canción',
+            artist: data.artist?.name || song.artist || 'Artista desconocido',
+            cover: data.album?.cover_medium || data.album?.cover_big || data.album?.cover || song.cover || '',
+            preview: data.preview || '',
+            releaseDate: data.release_date || data.album?.release_date || '',
+        };
+    }
+
+    async function getTrack(song) {
+        const key = String(song.deezerId || '');
+        if (!key) return null;
+        if (state.trackCache.has(key)) return state.trackCache.get(key);
+        const data = await fetchDeezerTrack(key);
+        const track = normalizeDeezerTrack(song, data);
+        state.trackCache.set(key, track);
+        return track;
     }
 
     function injectStyles() {
@@ -343,7 +360,7 @@
                 <p class="font-black text-white">Canción oculta</p>
                 <p class="text-sm text-gray-500 mt-1">Escucha el fragmento y adivina el año.</p>
             </div>
-            ${renderPlayer(Boolean(song.deezerId || song.preview))}
+            ${renderPlayer(Boolean(song.deezerId))}
             <div class="space-y-3 mt-4">
                 <div class="text-center"><span id="sd-year-value" class="text-5xl font-black gradient-text">${currentGuess}</span></div>
                 <input id="sd-year-range" type="range" min="${MIN_YEAR}" max="${MAX_YEAR}" value="${currentGuess}" class="range-styled">
@@ -352,12 +369,15 @@
             </div>
         `;
         $('sd-year-range').addEventListener('input', (event) => $('sd-year-value').textContent = event.target.value);
-        $('sd-answer').addEventListener('click', submitAnswer);
+        $('sd-answer').addEventListener('click', () => submitAnswer());
         bindPlayer(song);
+        getTrack(song).then((track) => {
+            if (!track?.preview && $('sd-audio-error')) $('sd-audio-error').textContent = 'Esta canción no tiene preview en Deezer';
+        });
     }
 
     function renderPlayer(canPlay) {
-        if (!canPlay) return '<div class="glass rounded-2xl p-4 text-center text-xs text-gray-500">Sin preview disponible</div>';
+        if (!canPlay) return '<div class="glass rounded-2xl p-4 text-center text-xs text-gray-500">Sin deezerId para consultar preview</div>';
         return `
             <div class="glass rounded-2xl p-4 sd-player">
                 <div class="flex items-center gap-3">
@@ -370,7 +390,7 @@
                         <div class="flex justify-between text-xs text-gray-500"><span id="sd-cur">0:00</span><span id="sd-dur">0:30</span></div>
                     </div>
                 </div>
-                <p id="sd-audio-error" class="hidden text-xs text-red-300 text-center mt-2">No se pudo reproducir el preview</p>
+                <p id="sd-audio-error" class="hidden text-xs text-red-300 text-center mt-2">No se pudo reproducir el preview desde Deezer</p>
             </div>
         `;
     }
@@ -383,9 +403,9 @@
             try {
                 if (!state.audio) {
                     button.textContent = '…';
-                    const preview = await getFreshPreview(song);
-                    if (!preview) throw new Error('Sin preview');
-                    state.audio = new Audio(preview);
+                    const trackData = await getTrack(song);
+                    if (!trackData?.preview) throw new Error('Sin preview en Deezer');
+                    state.audio = new Audio(trackData.preview);
                     state.audio.preload = 'metadata';
                     state.audio.addEventListener('timeupdate', updateAudioUi);
                     state.audio.addEventListener('loadedmetadata', updateAudioUi);
@@ -431,7 +451,7 @@
 
     function showAudioError() {
         $('sd-audio-error')?.classList.remove('hidden');
-        window.showRoundEvent?.('No se pudo reproducir el preview', 'warning');
+        window.showRoundEvent?.('No se pudo reproducir el preview desde Deezer', 'warning');
         setAudioPlaying(false);
     }
 
@@ -444,14 +464,15 @@
         setAudioPlaying(false);
     }
 
-    function submitAnswer() {
+    async function submitAnswer() {
         const song = state.songs[state.index];
         const guess = Number($('sd-year-range')?.value);
         const elapsed = Math.round((Date.now() - state.startedAt) / 1000);
+        const trackData = await getTrack(song);
         const answer = {
-            title: song.title,
-            artist: song.artist,
-            cover: song.cover || '',
+            title: trackData?.title || song.title || 'Canción',
+            artist: trackData?.artist || song.artist || 'Artista desconocido',
+            cover: trackData?.cover || song.cover || '',
             year: Number(song.year),
             guess,
             diff: Math.abs(guess - Number(song.year)),
