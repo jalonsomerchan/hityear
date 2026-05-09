@@ -1,6 +1,9 @@
 /*
  * HitYear Duel Mode
  * Modo competitivo 1vs1 en tiempo real sobre las salas WebSocket existentes.
+ *
+ * Importante: este módulo no debe forzar configuración en bucle. El anfitrión emite cambios
+ * de sala al tocar configuración, así que todo aquí es idempotente y cacheado.
  */
 (function initHitYearDuelMode() {
     const DUEL_STORAGE = 'hityear:duel-mode:active';
@@ -15,14 +18,15 @@
         patchedPlayAgain: false,
         lastScreen: '',
         lastRoundSignature: '',
+        lastLobbySignature: '',
+        lastLobbyStatus: '',
+        lobbyConfigured: false,
+        tickScheduled: false,
     };
 
     function onReady(callback) {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', callback, { once: true });
-        } else {
-            callback();
-        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', callback, { once: true });
+        else callback();
     }
 
     function showToast(message, type = 'info') {
@@ -38,7 +42,12 @@
     }
 
     function setDuelActive(active) {
-        state.active = Boolean(active);
+        const nextActive = Boolean(active);
+        if (state.active === nextActive) return;
+        state.active = nextActive;
+        state.lobbyConfigured = false;
+        state.lastLobbySignature = '';
+        state.lastLobbyStatus = '';
         localStorage.setItem(DUEL_STORAGE, state.active ? '1' : '0');
         document.documentElement.classList.toggle('duel-active', state.active);
     }
@@ -54,7 +63,6 @@
         style.textContent = `
             .duel-card { background: linear-gradient(135deg, rgba(245, 158, 11, .16), rgba(236, 72, 153, .14)); border: 1px solid rgba(245, 158, 11, .22); box-shadow: 0 18px 48px rgba(0,0,0,.28); }
             .duel-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .35rem .55rem; border-radius: 999px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.1); font-size: .72rem; color: #d1d5db; }
-            .duel-vs { background: linear-gradient(135deg, #f59e0b, #ec4899); -webkit-background-clip: text; background-clip: text; color: transparent; }
             .duel-leader { outline: 1px solid rgba(245, 158, 11, .35); box-shadow: 0 0 0 4px rgba(245, 158, 11, .08); }
             .duel-locked #host-actions button { opacity: .45; }
         `;
@@ -82,8 +90,8 @@
         if (typeof window.setTab === 'function') window.setTab('create');
         if (typeof window.handleEnter === 'function') {
             window.handleEnter();
-            window.setTimeout(applyLobbyDuelMode, 250);
-            window.setTimeout(applyLobbyDuelMode, 900);
+            window.setTimeout(scheduleTick, 250);
+            window.setTimeout(scheduleTick, 900);
             return;
         }
         showToast('No se pudo iniciar el duelo todavía', 'warning');
@@ -97,82 +105,104 @@
         return playerRows().length;
     }
 
-    function forceDuelConfig() {
-        const rounds = $('cfg-rounds');
-        const time = $('cfg-time');
-        if (rounds) {
-            rounds.value = String(DUEL_ROUNDS);
-            rounds.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if ($('val-rounds')) $('val-rounds').textContent = String(DUEL_ROUNDS);
-        if (time) {
-            time.value = String(DUEL_SECONDS);
-            time.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if ($('val-time')) $('val-time').textContent = `${DUEL_SECONDS}s`;
+    function setValueIfNeeded(input, value) {
+        if (!input || input.value === String(value)) return false;
+        input.value = String(value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+    }
+
+    function setTextIfNeeded(node, value) {
+        if (!node || node.textContent === String(value)) return false;
+        node.textContent = String(value);
+        return true;
+    }
+
+    function configureDuelLobbyOnce() {
+        if (!state.active || activeScreenId() !== 'screen-lobby' || state.lobbyConfigured) return;
+
+        setValueIfNeeded($('cfg-rounds'), DUEL_ROUNDS);
+        setTextIfNeeded($('val-rounds'), DUEL_ROUNDS);
+        setValueIfNeeded($('cfg-time'), DUEL_SECONDS);
+        setTextIfNeeded($('val-time'), `${DUEL_SECONDS}s`);
+
+        // Solo una vez. setAudioMode puede emitir cambios por WebSocket; no debe ejecutarse en cada tick.
         if (typeof window.setAudioMode === 'function') window.setAudioMode('all');
+        state.lobbyConfigured = true;
     }
 
     function applyLobbyDuelMode() {
         if (!state.active || activeScreenId() !== 'screen-lobby') return;
-        forceDuelConfig();
+        configureDuelLobbyOnce();
         ensureLobbyPanel();
         updateLobbyLock();
     }
 
     function ensureLobbyPanel() {
-        const hostCfg = $('host-cfg');
         const lobbyPlayers = $('lobby-players');
-        if (!hostCfg && !lobbyPlayers) return;
+        if (!lobbyPlayers || $('duel-lobby-panel')) return;
 
-        if (!$('duel-lobby-panel')) {
-            const panel = document.createElement('div');
-            panel.id = 'duel-lobby-panel';
-            panel.className = 'duel-card rounded-2xl p-4 mb-4 space-y-3';
-            panel.innerHTML = `
-                <div class="flex items-start justify-between gap-3">
-                    <div>
-                        <p class="text-xs text-amber-200 font-black uppercase tracking-wider">Modo duelo 1vs1</p>
-                        <p class="text-sm text-gray-300 mt-1">Dos jugadores, ${DUEL_ROUNDS} canciones, ${DUEL_SECONDS}s por ronda y marcador en directo.</p>
-                    </div>
-                    <button type="button" id="duel-cancel" class="btn-ghost px-3 py-1.5 rounded-lg text-xs">Salir</button>
+        const panel = document.createElement('div');
+        panel.id = 'duel-lobby-panel';
+        panel.className = 'duel-card rounded-2xl p-4 mb-4 space-y-3';
+        panel.innerHTML = `
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <p class="text-xs text-amber-200 font-black uppercase tracking-wider">Modo duelo 1vs1</p>
+                    <p class="text-sm text-gray-300 mt-1">Dos jugadores, ${DUEL_ROUNDS} canciones, ${DUEL_SECONDS}s por ronda y marcador en directo.</p>
                 </div>
-                <div class="flex flex-wrap gap-2">
-                    <span class="duel-chip">⚡ bonus de rapidez</span>
-                    <span class="duel-chip">🔥 combo visual</span>
-                    <span class="duel-chip">☠️ muerte súbita si empatan</span>
-                </div>
-                <p id="duel-lobby-status" class="text-xs text-gray-500"></p>
-            `;
-            const playersCard = lobbyPlayers?.closest('.glass.rounded-2xl');
-            playersCard?.insertAdjacentElement('afterend', panel);
-            $('duel-cancel')?.addEventListener('click', () => {
-                setDuelActive(false);
-                panel.remove();
-                updateLobbyLock();
-                showToast('Duelo desactivado', 'info');
-            });
-        }
+                <button type="button" id="duel-cancel" class="btn-ghost px-3 py-1.5 rounded-lg text-xs">Salir</button>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <span class="duel-chip">⚡ bonus de rapidez</span>
+                <span class="duel-chip">🔥 combo visual</span>
+                <span class="duel-chip">☠️ muerte súbita si empatan</span>
+            </div>
+            <p id="duel-lobby-status" class="text-xs text-gray-500"></p>
+        `;
+        const playersCard = lobbyPlayers.closest('.glass.rounded-2xl');
+        playersCard?.insertAdjacentElement('afterend', panel);
+        $('duel-cancel')?.addEventListener('click', () => {
+            setDuelActive(false);
+            panel.remove();
+            document.body.classList.remove('duel-locked');
+            const startButton = $('host-actions')?.querySelector('button');
+            if (startButton) {
+                startButton.disabled = false;
+                startButton.textContent = '🎮 Iniciar partida';
+            }
+            showToast('Duelo desactivado', 'info');
+        });
     }
 
     function updateLobbyLock() {
         if (!state.active || activeScreenId() !== 'screen-lobby') return;
+
         const count = playerCount();
         const ready = count === 2;
+        const signature = `${count}|${ready}|${textOf($('lobby-players'))}`;
+        if (signature === state.lastLobbySignature) return;
+        state.lastLobbySignature = signature;
+
         document.body.classList.toggle('duel-locked', !ready);
+
         const status = $('duel-lobby-status');
-        if (status) {
-            status.textContent = ready
-                ? 'Listo: ya sois 2 jugadores. El anfitrión puede iniciar el duelo.'
-                : count < 2
-                    ? `Esperando rival: ${count}/2 jugadores conectados.`
-                    : `Hay ${count} jugadores. El duelo solo admite 2; crea una sala nueva o deja solo a dos.`;
+        const statusText = ready
+            ? 'Listo: ya sois 2 jugadores. El anfitrión puede iniciar el duelo.'
+            : count < 2
+                ? `Esperando rival: ${count}/2 jugadores conectados.`
+                : `Hay ${count} jugadores. El duelo solo admite 2; deja solo a dos jugadores.`;
+        if (status && statusText !== state.lastLobbyStatus) {
+            state.lastLobbyStatus = statusText;
+            status.textContent = statusText;
             status.className = ready ? 'text-xs text-emerald-300' : 'text-xs text-amber-200';
         }
+
         const startButton = $('host-actions')?.querySelector('button');
         if (startButton) {
-            startButton.textContent = ready ? '⚔️ Iniciar duelo 1vs1' : '⚔️ Esperando 2 jugadores';
-            startButton.disabled = !ready;
+            const nextText = ready ? '⚔️ Iniciar duelo 1vs1' : '⚔️ Esperando 2 jugadores';
+            if (startButton.textContent !== nextText) startButton.textContent = nextText;
+            if (startButton.disabled === ready) startButton.disabled = !ready;
         }
     }
 
@@ -181,7 +211,7 @@
         const original = window.startGame;
         window.startGame = function duelStartGameWrapper(...args) {
             if (state.active) {
-                forceDuelConfig();
+                configureDuelLobbyOnce();
                 const count = playerCount();
                 if (count !== 2) {
                     showToast('El duelo 1vs1 necesita exactamente 2 jugadores', 'warning');
@@ -201,10 +231,9 @@
         window.playAgain = function duelPlayAgainWrapper(...args) {
             const result = original.apply(this, args);
             if (state.active) {
-                window.setTimeout(() => {
-                    forceDuelConfig();
-                    applyLobbyDuelMode();
-                }, 300);
+                state.lobbyConfigured = false;
+                state.lastLobbySignature = '';
+                window.setTimeout(scheduleTick, 300);
             }
             return result;
         };
@@ -247,7 +276,7 @@
 
     function ensureRoundDuelPanel() {
         if (!state.active || activeScreenId() !== 'screen-round-result') return;
-        const signature = textOf($('rr-board')) + '|' + textOf($('rr-answers')) + '|' + textOf($('rr-year'));
+        const signature = `${textOf($('rr-board'))}|${textOf($('rr-answers'))}|${textOf($('rr-year'))}`;
         if (!signature || signature === state.lastRoundSignature) return;
         state.lastRoundSignature = signature;
 
@@ -285,8 +314,7 @@
     }
 
     function ensureGameOverDuelPanel() {
-        if (!state.active || activeScreenId() !== 'screen-game-over') return;
-        if ($('duel-gameover-panel')) return;
+        if (!state.active || activeScreenId() !== 'screen-game-over' || $('duel-gameover-panel')) return;
         const board = boardFrom('go-board');
         if (!board.length) return;
 
@@ -298,9 +326,8 @@
             <div class="text-4xl">☠️</div>
             <div>
                 <p class="font-black text-amber-200">¡Empate! Muerte súbita</p>
-                <p class="text-sm text-gray-400 mt-1">Jugad una revancha rápida a 1 canción para desempatar.</p>
+                <p class="text-sm text-gray-400 mt-1">Jugad una revancha rápida para desempatar.</p>
             </div>
-            <button type="button" id="duel-sudden-death" class="btn-grad w-full py-3 rounded-xl">☠️ Jugar muerte súbita</button>
         ` : `
             <div class="text-4xl">⚔️</div>
             <div>
@@ -311,19 +338,7 @@
             <button type="button" id="duel-share" class="btn-ghost w-full py-3 rounded-xl">Compartir duelo</button>
         `;
         $('go-board')?.closest('.glass.rounded-2xl')?.insertAdjacentElement('afterend', panel);
-
         $('duel-share')?.addEventListener('click', () => shareDuelResult(board));
-        $('duel-sudden-death')?.addEventListener('click', () => {
-            localStorage.setItem('hityear:duel-mode:sudden-death', '1');
-            if (typeof window.playAgain === 'function') window.playAgain();
-            window.setTimeout(() => {
-                const rounds = $('cfg-rounds');
-                if (rounds) rounds.value = '1';
-                if ($('val-rounds')) $('val-rounds').textContent = '1';
-                applyLobbyDuelMode();
-                showToast('☠️ Muerte súbita: 1 canción', 'warning');
-            }, 500);
-        });
     }
 
     async function shareDuelResult(board) {
@@ -348,6 +363,7 @@
     }
 
     function tick() {
+        state.tickScheduled = false;
         patchStartGame();
         patchPlayAgain();
         ensureWelcomeButton();
@@ -355,26 +371,37 @@
         const screen = activeScreenId();
         if (screen !== state.lastScreen) {
             state.lastScreen = screen;
-            if (screen === 'screen-welcome') {
-                setDuelActive(false);
+            state.lastRoundSignature = '';
+            if (screen === 'screen-lobby') {
+                state.lobbyConfigured = false;
+                state.lastLobbySignature = '';
             }
         }
 
-        if (state.active) {
-            if (screen === 'screen-lobby') applyLobbyDuelMode();
-            if (screen === 'screen-playing') ensurePlayingBanner();
-            if (screen === 'screen-round-result') ensureRoundDuelPanel();
-            if (screen === 'screen-game-over') ensureGameOverDuelPanel();
-        }
+        if (!state.active) return;
+        if (screen === 'screen-lobby') applyLobbyDuelMode();
+        if (screen === 'screen-playing') ensurePlayingBanner();
+        if (screen === 'screen-round-result') ensureRoundDuelPanel();
+        if (screen === 'screen-game-over') ensureGameOverDuelPanel();
+    }
+
+    function scheduleTick() {
+        if (state.tickScheduled) return;
+        state.tickScheduled = true;
+        window.requestAnimationFrame(tick);
     }
 
     onReady(() => {
         injectStyles();
         ensureWelcomeButton();
         document.documentElement.classList.toggle('duel-active', state.active);
-        const observer = new MutationObserver(tick);
+        const observer = new MutationObserver(scheduleTick);
         observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
-        window.setInterval(tick, 700);
-        window.HitYearDuel = { start: startDuelFlow, activate: () => setDuelActive(true), deactivate: () => setDuelActive(false) };
+        window.setInterval(scheduleTick, 1200);
+        window.HitYearDuel = {
+            start: startDuelFlow,
+            activate: () => setDuelActive(true),
+            deactivate: () => setDuelActive(false),
+        };
     });
 }());
