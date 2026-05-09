@@ -19,14 +19,15 @@ const HIT_THE_YEAR_THEMES = [
 window.HIT_THE_YEAR_THEMES = HIT_THE_YEAR_THEMES;
 
 (function loadHitYearOptionalModules() {
-    const src = 'data/daily-challenge.js';
-    if (document.querySelector(`script[src="${src}"]`)) return;
+    ['data/daily-challenge.js', 'data/daily-solo-fix.js'].forEach((src) => {
+        if (document.querySelector(`script[src="${src}"]`)) return;
 
-    const script = document.createElement('script');
-    script.src = src;
-    script.defer = true;
-    script.onerror = () => console.warn(`No se pudo cargar ${src}`);
-    document.head.appendChild(script);
+        const script = document.createElement('script');
+        script.src = src;
+        script.defer = true;
+        script.onerror = () => console.warn(`No se pudo cargar ${src}`);
+        document.head.appendChild(script);
+    });
 }());
 
 /**
