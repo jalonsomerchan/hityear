@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Validar canciones · HitYear</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="../data/themes.js"></script>
+</head>
+<body class="bg-[#080812] text-white min-h-screen font-sans">
+<div class="max-w-5xl mx-auto p-5">
+  <a href="index.html" class="text-purple-300 text-sm">← Tools</a>
+  <h1 class="text-4xl font-black mt-4">🔎 Validación de datasets</h1>
+  <p class="text-gray-400 mt-2">Comprueba duplicados, previews vacíos y años sospechosos.</p>
+
+  <button id="run" class="mt-6 px-5 py-3 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 font-bold">Ejecutar validación</button>
+
+  <div id="results" class="mt-8 space-y-6"></div>
+</div>
+
+<script>
+const CURRENT_YEAR = new Date().getFullYear();
+
+async function loadTheme(theme) {
+  await import(`../data/${theme.id}.js`);
+  return window[theme.variable];
+}
+
+function renderIssue(type, text) {
+  const colors = {
+    duplicate: 'border-yellow-500/30 bg-yellow-500/10 text-yellow-200',
+    year: 'border-red-500/30 bg-red-500/10 text-red-200',
+    preview: 'border-blue-500/30 bg-blue-500/10 text-blue-200'
+  };
+
+  return `<div class="rounded-xl border px-4 py-3 text-sm ${colors[type]}">${text}</div>`;
+}
+
+async function runValidation() {
+  const container = document.getElementById('results');
+  container.innerHTML = '<p class="text-gray-400">Validando...</p>';
+
+  const seen = new Set();
+  let html = '';
+
+  for (const theme of HIT_THE_YEAR_THEMES) {
+    try {
+      const songs = await loadTheme(theme);
+      const issues = [];
+
+      songs.forEach(song => {
+        const key = `${song.title}__${song.artist}`;
+
+        if (seen.has(key)) {
+          issues.push(renderIssue('duplicate', `🔁 Duplicado: <strong>${song.title}</strong> — ${song.artist}`));
+        } else {
+          seen.add(key);
+        }
+
+        if (song.year < 1950 || song.year > CURRENT_YEAR) {
+          issues.push(renderIssue('year', `⚠️ Año sospechoso: <strong>${song.title}</strong> (${song.year})`));
+        }
+
+        if (!song.preview) {
+          issues.push(renderIssue('preview', `🔇 Sin preview: <strong>${song.title}</strong>`));
+        }
+      });
+
+      html += `
+      <section class="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 class="text-2xl font-bold">${theme.label}</h2>
+            <p class="text-gray-500 text-sm">${songs.length} canciones</p>
+          </div>
+          <span class="text-sm px-3 py-1 rounded-full ${issues.length ? 'bg-red-500/20 text-red-200' : 'bg-green-500/20 text-green-200'}">${issues.length} incidencias</span>
+        </div>
+        <div class="space-y-3">
+          ${issues.length ? issues.join('') : '<div class="rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-green-200 text-sm">✅ Dataset correcto</div>'}
+        </div>
+      </section>`;
+
+    } catch (err) {
+      html += `<div class="rounded-2xl border border-red-500/30 bg-red-500/10 p-5">❌ Error cargando ${theme.label}: ${err.message}</div>`;
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+document.getElementById('run').addEventListener('click', runValidation);
+</script>
+</body>
+</html>
