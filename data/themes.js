@@ -13,6 +13,9 @@ const HIT_THE_YEAR_THEMES = [
     { id: 'espana80y90', label: 'España 80 y 90', variable: 'espana80y90' },
     { id: 'bestHits', label: 'Best Hits', variable: 'bestHits' },
     { id: 'soloRegguetton', label: 'Solo Regguetton', variable: 'soloRegguetton' },
+    { id: 'best300', label: 'Las mejores 250 canciones de España', variable: 'best300' },
+    { id: 'verbena100', label: 'Verbena 100', variable: 'verbena100' },
+    { id: 'cuandoEramosJovenes', label: 'Cuando Eramos Jovenes', variable: 'cuandoEramosJovenes' },
 
 ];
 
